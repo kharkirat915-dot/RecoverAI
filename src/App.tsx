@@ -148,7 +148,7 @@ const INITIAL_TRANSACTIONS: Transaction[] = [
     confidenceScore: 96,
     paymentMethod: 'ICICI Coral Credit Card ••8902',
     gatewayErrorCode: 'EXPIRED_CARD_SUBMITTED',
-    aiReasoning: 'Card validity expired (08/26). Direct retries would fail 100%. RecoverAI sent an authenticated card updating link via SMS & Email. Customer entered fresh RuPay card and completed payment.',
+    aiReasoning: 'Card validity expired (08/26). Direct retries would fail 100%. Nabbit sent an authenticated card updating link via SMS & Email. Customer entered fresh RuPay card and completed payment.',
     retryAttempts: 1,
     actionChannel: 'sms',
     optimalTimeWindow: '10:00 AM - 1:00 PM',
@@ -210,7 +210,7 @@ const INITIAL_TRANSACTIONS: Transaction[] = [
     confidenceScore: 99,
     paymentMethod: 'PhonePe UPI (neha@ybl)',
     gatewayErrorCode: 'CLIENT_SOCKET_RESET_DURING_HANDSHAKE',
-    aiReasoning: 'Client connection terminated prematurely before NPCI 2-factor acknowledgment. Idempotency key verified. RecoverAI executed silent server-to-server callback retry without disturbing the user.',
+    aiReasoning: 'Client connection terminated prematurely before NPCI 2-factor acknowledgment. Idempotency key verified. Nabbit executed silent server-to-server callback retry without disturbing the user.',
     retryAttempts: 1,
     actionChannel: 'auto_retry',
     optimalTimeWindow: 'Immediate',
@@ -314,7 +314,7 @@ const INITIAL_TRANSACTIONS: Transaction[] = [
     confidenceScore: 97,
     paymentMethod: 'SBI Corporate Netbanking',
     gatewayErrorCode: 'GATEWAY_ERROR_NETWORK_TIMEOUT',
-    aiReasoning: 'SBI host timed out during peak morning treasury clearing. RecoverAI delayed retry by 18 minutes. Succeeded on first scheduled retry.',
+    aiReasoning: 'SBI host timed out during peak morning treasury clearing. Nabbit delayed retry by 18 minutes. Succeeded on first scheduled retry.',
     retryAttempts: 1,
     actionChannel: 'auto_retry',
     optimalTimeWindow: '18 mins later',
@@ -459,7 +459,7 @@ const formatINR = (val: number) => {
 };
 
 // ==========================================
-// MAIN RECOVERAI APPLICATION
+// MAIN NABBIT APPLICATION
 // ==========================================
 
 export default function App() {
@@ -515,9 +515,18 @@ export default function App() {
   const [isLiveGemini, setIsLiveGemini] = useState(false);
   const [simResult, setSimResult] = useState<{
     action: string;
-    reasoning: string;
-    message: string;
     confidence: number;
+    whyThisWasSelected: {
+      failurePattern: string;
+      recoveryLikelihood: string;
+      costBenefit: string;
+    };
+    constraintChecks: Array<{
+      constraint: string;
+      status: 'Passed' | 'Failed';
+    }>;
+    message: string;
+    escalate: boolean;
     channel: 'whatsapp' | 'auto_retry' | 'sms' | 'manual';
     errorCode: string;
     isLiveAi?: boolean;
@@ -643,7 +652,7 @@ export default function App() {
     };
 
     setTransactions((prev) => [newTx, ...prev]);
-    showToast(`Incoming failed payment captured! RecoverAI initiated ${action}.`);
+    showToast(`Incoming failed payment captured! Nabbit initiated ${action}.`);
   };
 
   // Run Simulator Engine using live Gemini API
@@ -684,80 +693,124 @@ export default function App() {
       // Determine channel from action text
       const actionText = (data.recommendedAction || '').toLowerCase();
       let channel: 'whatsapp' | 'auto_retry' | 'sms' | 'manual' = 'whatsapp';
-      if (actionText.includes('retry') || actionText.includes('delayed') || actionText.includes('background')) {
+      if (data.escalate || actionText.includes('escalat') || actionText.includes('manual') || actionText.includes('ops') || actionText.includes('review')) {
+        channel = 'manual';
+      } else if (actionText.includes('retry') || actionText.includes('delayed') || actionText.includes('background')) {
         channel = 'auto_retry';
       } else if (actionText.includes('sms') && !actionText.includes('whatsapp')) {
         channel = 'sms';
-      } else if (actionText.includes('escalat') || actionText.includes('manual') || actionText.includes('ops') || actionText.includes('review')) {
-        channel = 'manual';
       } else {
         channel = 'whatsapp';
       }
 
       setSimResult({
         action: data.recommendedAction || 'Smart Retry',
-        reasoning: data.reasoning || 'Payment failure analyzed by autonomous recovery engine.',
-        message: data.customerMessage || `Hi ${simCustomer}, please complete your payment: https://rzp.io/i/rec_${Math.floor(Math.random() * 89999 + 10000)}`,
-        confidence: typeof data.confidenceScore === 'number' ? data.confidenceScore : 94,
+        confidence: typeof data.confidenceScore === 'number' ? data.confidenceScore : 92,
+        whyThisWasSelected: data.whyThisWasSelected || {
+          failurePattern: `Gateway failure classified as ${simReason.replace(/_/g, ' ')}.`,
+          recoveryLikelihood: `High probability of recovery through selected channel.`,
+          costBenefit: `Minimal intervention cost compared to ₹${simAmount.toLocaleString()} order value.`,
+        },
+        constraintChecks: Array.isArray(data.constraintChecks) && data.constraintChecks.length > 0
+          ? data.constraintChecks
+          : [
+              { constraint: 'Recovery cost below transaction value', status: 'Passed' },
+              { constraint: 'Customer risk score acceptable', status: simReason === 'risk_declined' ? 'Failed' : 'Passed' },
+              { constraint: 'Retry attempts within policy limit', status: 'Passed' },
+              { constraint: 'Within optimal retry time window', status: simReason === 'card_expired' ? 'Failed' : 'Passed' }
+            ],
+        message: data.escalate ? '' : (data.customerMessage || `Hi ${simCustomer}, please complete your payment: https://rzp.io/i/rec_${Math.floor(Math.random() * 89999 + 10000)}`),
+        escalate: Boolean(data.escalate),
         channel,
         errorCode: `RZP_${simReason.toUpperCase()}_DETECTED`,
         isLiveAi: true,
       });
       setIsLiveGemini(true);
-      showToast('Live Gemini AI generated recovery plan & customer message!');
+      showToast(data.escalate ? 'AI flagged transaction for Human Review.' : 'Live Gemini AI generated structured recovery plan!');
     } catch (err: any) {
       console.warn('Gemini simulation fallback triggered:', err);
       setSimError('AI analysis temporarily unavailable');
       showToast('AI analysis temporarily unavailable — executed fallback strategy.');
 
       // Fallback heuristics so merchant flow continues smoothly without interruption
-      let action = 'Smart Retry (Autonomous Delayed Queue)';
-      let reasoning = `Autonomous fallback strategy for ${simReason.replace(/_/g, ' ')}. Due to transient gateway condition, RecoverAI has staged an optimal recovery route for ₹${simAmount.toLocaleString()}.`;
+      const shouldEscalate = simReason === 'risk_declined' || simAmount > 20000;
+      let action = shouldEscalate ? 'Escalate for Manual Review' : 'Smart Retry';
+      let failurePattern = `Gateway decline identified due to ${simReason.replace(/_/g, ' ')}.`;
+      let recoveryLikelihood = `Targeted recovery path yields high conversion for this failure profile.`;
+      let costBenefit = `Marginal recovery cost is heavily outweighed by ₹${simAmount.toLocaleString()} order value.`;
       let message = `Hi ${simCustomer}, we noticed your payment of ₹${simAmount.toLocaleString()} could not be completed. Finish securely: https://rzp.io/i/rec_${Math.floor(Math.random() * 89999 + 10000)}`;
-      let confidence = 88;
+      let confidence = 89;
       let channel: 'whatsapp' | 'auto_retry' | 'sms' | 'manual' = 'whatsapp';
 
-      const discountVal = Math.round(simAmount * 0.05);
-
-      if (simReason === 'insufficient_funds') {
-        action = simAmount >= 500 && settings.discountAbove500
-          ? `Incentivized Retry (${settings.discountPercent}% off: ₹${discountVal}) + WhatsApp Link`
-          : 'Payment Link via WhatsApp with Alternate UPI';
-        reasoning = `Customer balance limit detected for ticket of ₹${simAmount.toLocaleString()}. RecoverAI applied a ${settings.discountPercent}% cart recovery discount (₹${discountVal} off) to reduce purchase friction via WhatsApp.`;
-        message = `Hi ${simCustomer}, we noticed your payment of ₹${simAmount.toLocaleString()} faced a bank limit. Complete your order for ₹${(simAmount - discountVal).toLocaleString()} with 5% off: https://rzp.io/i/rec_${Math.floor(Math.random() * 89999 + 10000)}`;
+      if (shouldEscalate) {
+        channel = 'manual';
+        confidence = 94;
+        failurePattern = simReason === 'risk_declined'
+          ? 'Transaction flagged by gateway risk evaluation filter.'
+          : 'High-value transaction exceeding ₹20,000 policy threshold.';
+        recoveryLikelihood = 'Manual VIP intervention prevents customer churn without dispute liability.';
+        costBenefit = 'Merchant liability protection heavily outweighs autonomous retry risk.';
+        message = '';
+      } else if (simReason === 'insufficient_funds') {
+        action = simAmount >= 500 && settings.discountAbove500 ? 'Incentivized Retry' : 'Payment Link';
+        failurePattern = 'Customer account balance fell below authorization charge amount.';
+        recoveryLikelihood = 'WhatsApp payment link gives customer immediate buffer to replenish funds.';
+        costBenefit = `Minimal message dispatch fee protects full ₹${simAmount.toLocaleString()} revenue.`;
         confidence = 92;
         channel = 'whatsapp';
       } else if (simReason === 'card_expired') {
-        action = 'Payment Link via WhatsApp/SMS with Card Update';
-        reasoning = `Card expiry flag encountered (${simMethod}). Dispatched an authenticated tokenization link for customer to enter their renewed card.`;
-        message = `Hello ${simCustomer}, your card for order of ₹${simAmount.toLocaleString()} expired. Update your details securely to finalize order: https://rzp.io/i/update_card`;
-        confidence = 94;
+        action = 'Payment Link';
+        failurePattern = 'Card expiration date check declined by card network.';
+        recoveryLikelihood = 'Payment link lets customer seamlessly enter an updated active card.';
+        costBenefit = 'Preserves customer relationship without hitting repeated card network reject penalties.';
+        confidence = 95;
         channel = 'sms';
       } else if (simReason === 'bank_server_timeout') {
-        action = 'Smart Delayed Retry (Queued for 15-30m window)';
-        reasoning = `Bank gateway node experienced temporary timeout. Queued autonomous silent retry for 20 minutes when bank API latency stabilizes.`;
-        message = `Internal Agent Task: Transaction of ₹${simAmount.toLocaleString()} queued in smart retry backlog.`;
-        confidence = 95;
+        action = 'Smart Retry';
+        failurePattern = 'Transient bank core banking switch timeout during traffic surge.';
+        recoveryLikelihood = 'Autonomous scheduled retry succeeds once bank nodes stabilize.';
+        costBenefit = 'Zero customer friction with automatic revenue capture in background.';
+        confidence = 96;
         channel = 'auto_retry';
-      } else if (simReason === 'risk_declined') {
-        action = 'Escalation to VIP Ops Manual Follow-Up';
-        reasoning = `Flagged by fraud mitigation filter. Automated retries suspended to prevent merchant dispute liabilities.`;
-        message = `Merchant Risk Alert: Transaction ₹${simAmount.toLocaleString()} flagged. Escalated to VIP operations.`;
-        confidence = 86;
-        channel = 'manual';
       } else if (simReason === 'otp_timeout') {
-        action = 'WhatsApp 1-Click Fast UPI Intent Link';
-        reasoning = `Customer dropped at 3DS OTP step. RecoverAI generated a 1-tap UPI deep link to bypass SMS OTP friction entirely.`;
-        message = `Hi ${simCustomer}, skip bank OTP delay and pay ₹${simAmount.toLocaleString()} instantly via UPI: https://rzp.io/i/upi_fast`;
+        action = 'Payment Link';
+        failurePattern = 'Customer authentication session expired at 3DS OTP step.';
+        recoveryLikelihood = 'Direct 1-click payment link bypasses SMS delivery bottleneck.';
+        costBenefit = 'Recovers high-intent customer before session permanently abandons.';
         confidence = 91;
         channel = 'whatsapp';
       }
 
+      const constraintChecks: Array<{ constraint: string; status: 'Passed' | 'Failed' }> = [
+        {
+          constraint: 'Recovery cost below transaction value',
+          status: simAmount < 50 ? 'Failed' : 'Passed',
+        },
+        {
+          constraint: 'Customer risk score acceptable',
+          status: simReason === 'risk_declined' ? 'Failed' : 'Passed',
+        },
+        {
+          constraint: 'Retry attempts within policy limit',
+          status: simReason === 'card_expired' ? 'Failed' : 'Passed',
+        },
+        {
+          constraint: 'Within optimal retry time window',
+          status: simReason === 'card_expired' ? 'Failed' : 'Passed',
+        },
+      ];
+
       setSimResult({
         action,
-        reasoning,
-        message,
         confidence,
+        whyThisWasSelected: {
+          failurePattern,
+          recoveryLikelihood,
+          costBenefit,
+        },
+        constraintChecks,
+        message,
+        escalate: shouldEscalate,
         channel,
         errorCode: `GATEWAY_ERROR_${simReason.toUpperCase()}`,
         isLiveAi: false,
@@ -783,17 +836,17 @@ export default function App() {
       amount: simAmount,
       failureReason: simReason,
       aiAction: simResult.action,
-      status: 'Recovering',
+      status: simResult.escalate ? 'Pending' : 'Recovering',
       timestamp: 'Just now',
       confidenceScore: simResult.confidence,
       paymentMethod: simMethod,
       gatewayErrorCode: simResult.errorCode,
-      aiReasoning: simResult.reasoning,
+      aiReasoning: `${simResult.whyThisWasSelected.failurePattern} ${simResult.whyThisWasSelected.recoveryLikelihood}`,
       retryAttempts: 1,
       actionChannel: simResult.channel,
-      optimalTimeWindow: 'Calculated by Agent',
+      optimalTimeWindow: simResult.escalate ? 'Manual Hold' : 'Calculated by Agent',
       customerTier: simTier,
-      recoveryMessage: simResult.message
+      recoveryMessage: simResult.message || 'Escalated for human review.'
     };
 
     setTransactions((prev) => [newTx, ...prev]);
@@ -885,7 +938,7 @@ export default function App() {
   };
 
   return (
-    <div id="recoverai-root" className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row antialiased selection:bg-teal-500 selection:text-white">
+    <div id="nabbit-root" className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row antialiased selection:bg-teal-500 selection:text-white">
       {/* ========================================================================= */}
       {/* LEFT SIDEBAR - Modern Dark Fintech Style */}
       {/* ========================================================================= */}
@@ -899,7 +952,7 @@ export default function App() {
               </div>
               <div>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-bold text-lg text-white tracking-tight">RecoverAI</span>
+                  <span className="font-bold text-lg text-white tracking-tight">Nabbit</span>
                   <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30">
                     Agent
                   </span>
@@ -1076,7 +1129,7 @@ export default function App() {
                   </div>
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-slate-500">
                     <span className="text-amber-600 font-semibold">{transactions.length} total failures</span>
-                    <span>monitored by RecoverAI</span>
+                    <span>monitored by Nabbit</span>
                   </div>
                 </div>
 
@@ -1117,7 +1170,7 @@ export default function App() {
                   </div>
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-slate-500">
                     <span className="text-teal-700 font-semibold">Industry avg: 18%</span>
-                    <span>(RecoverAI +56%)</span>
+                    <span>(Nabbit +56%)</span>
                   </div>
                 </div>
 
@@ -1150,7 +1203,7 @@ export default function App() {
                       Recovered vs Lost Revenue (Last 14 Days)
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Visualizing daily recovered revenue recovered autonomously by RecoverAI compared to unrecoverable drops
+                      Visualizing daily revenue recovered autonomously by Nabbit compared to unrecoverable drops
                     </p>
                   </div>
 
@@ -1444,7 +1497,7 @@ export default function App() {
                 <div className="px-5 py-3 bg-slate-50/80 border-t border-slate-100 flex flex-wrap items-center justify-between text-xs text-slate-500">
                   <span>Showing {filteredTransactions.length} transaction failures in active log</span>
                   <span className="font-medium text-slate-600">
-                    RecoverAI autonomous loop runs every 60 seconds
+                    Nabbit autonomous loop runs every 60 seconds
                   </span>
                 </div>
               </div>
@@ -1467,7 +1520,7 @@ export default function App() {
                       Simulate a New Failed Payment &amp; Watch AI Decide
                     </h2>
                     <p className="text-xs text-slate-300 mt-1 max-w-2xl">
-                      Enter any failed payment scenario below. RecoverAI's real-time reasoning agent will analyze the failure
+                      Enter any failed payment scenario below. Nabbit's real-time reasoning agent will analyze the failure
                       friction, customer profile, and gateway telemetry to draft the highest-probability recovery action.
                     </p>
                   </div>
@@ -1614,17 +1667,24 @@ export default function App() {
                       </div>
 
                       {simResult && (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           {isLiveGemini && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
                               <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
                               Live Gemini
                             </span>
                           )}
-                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            Strategy Ready ({simResult.confidence}% Confidence)
-                          </span>
+                          {simResult.escalate ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                              <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
+                              Escalated for Human Review
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              Strategy Ready ({simResult.confidence}% Confidence)
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1667,46 +1727,147 @@ export default function App() {
                     {/* Simulation Result */}
                     {!isSimulating && simResult && (
                       <div className="mt-5 space-y-4">
-                        {/* Chosen Strategy */}
-                        <div className="p-4 rounded-xl bg-teal-50/60 border border-teal-200">
-                          <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="font-semibold text-teal-800 uppercase tracking-wider text-[11px]">
-                              Recommended Recovery Action
-                            </span>
-                            <span className="font-bold text-teal-700 bg-teal-100/80 px-2 py-0.5 rounded">
-                              Channel: {simResult.channel.toUpperCase()}
-                            </span>
-                          </div>
-                          <p className="font-extrabold text-slate-900 text-base">{simResult.action}</p>
-                        </div>
-
-                        {/* AI Reasoning Rationale */}
-                        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-                          <div className="flex items-center gap-2 mb-1.5">
-                            <Bot className="w-4 h-4 text-indigo-600" />
-                            <span className="font-bold text-xs text-slate-900">AI Reasoning Explanation</span>
-                          </div>
-                          <p className="text-xs text-slate-700 leading-relaxed">{simResult.reasoning}</p>
-                        </div>
-
-                        {/* Drafted Customer Message */}
-                        <div className="p-4 rounded-xl bg-emerald-50/40 border border-emerald-200 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <MessageSquare className="w-4 h-4 text-emerald-600" />
-                              <span className="font-bold text-xs text-emerald-900">
-                                Suggested Customer Message Draft (WhatsApp / SMS)
+                        {/* Chosen Strategy / Escalation Status */}
+                        {simResult.escalate ? (
+                          <div className="p-4 rounded-xl bg-rose-50/70 border border-rose-200">
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="font-semibold text-rose-800 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                                <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
+                                Escalated for Human Review
+                              </span>
+                              <span className="font-bold text-rose-700 bg-rose-100/90 px-2 py-0.5 rounded text-[11px]">
+                                {simResult.confidence}% Confidence
                               </span>
                             </div>
-                            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
-                              1-Click Razorpay Link
+                            <p className="font-extrabold text-slate-900 text-base">{simResult.action}</p>
+                            <p className="text-xs text-rose-700 mt-1">
+                              High risk or high transaction value detected. Automated recovery suspended; ticket routed to merchant operations review.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="p-4 rounded-xl bg-teal-50/60 border border-teal-200">
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="font-semibold text-teal-800 uppercase tracking-wider text-[11px]">
+                                Recommended Recovery Action
+                              </span>
+                              <span className="font-bold text-teal-700 bg-teal-100/80 px-2 py-0.5 rounded text-[11px]">
+                                Channel: {simResult.channel.toUpperCase()} • {simResult.confidence}% Confidence
+                              </span>
+                            </div>
+                            <p className="font-extrabold text-slate-900 text-base">{simResult.action}</p>
+                          </div>
+                        )}
+
+                        {/* Why This Was Selected (3 short labeled lines) */}
+                        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                          <div className="flex items-center gap-2 mb-0.5 border-b border-slate-200/80 pb-2">
+                            <Bot className="w-4 h-4 text-indigo-600" />
+                            <span className="font-bold text-xs text-slate-900">Why This Was Selected</span>
+                          </div>
+
+                          <div className="space-y-2.5 text-xs">
+                            <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 bg-white p-2.5 rounded-lg border border-slate-200/70">
+                              <span className="font-bold text-slate-600 sm:w-40 shrink-0 flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                Failure Pattern:
+                              </span>
+                              <span className="text-slate-800 font-medium leading-relaxed">
+                                {simResult.whyThisWasSelected?.failurePattern}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 bg-white p-2.5 rounded-lg border border-slate-200/70">
+                              <span className="font-bold text-slate-600 sm:w-40 shrink-0 flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
+                                Recovery Likelihood:
+                              </span>
+                              <span className="text-slate-800 font-medium leading-relaxed">
+                                {simResult.whyThisWasSelected?.recoveryLikelihood}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 bg-white p-2.5 rounded-lg border border-slate-200/70">
+                              <span className="font-bold text-slate-600 sm:w-40 shrink-0 flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                                Cost-Benefit:
+                              </span>
+                              <span className="text-slate-800 font-medium leading-relaxed">
+                                {simResult.whyThisWasSelected?.costBenefit}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Constraint Checks (small table/list with checkmark and X) */}
+                        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                          <div className="flex items-center justify-between border-b border-slate-200/80 pb-2">
+                            <div className="flex items-center gap-2">
+                              <Sliders className="w-4 h-4 text-teal-600" />
+                              <span className="font-bold text-xs text-slate-900">Constraint Checks</span>
+                            </div>
+                            <span className="text-[11px] font-semibold text-slate-500">
+                              {simResult.constraintChecks?.filter((c) => c.status === 'Passed').length || 0} of {simResult.constraintChecks?.length || 4} Passed
                             </span>
                           </div>
 
-                          <div className="p-3 bg-white rounded-lg border border-emerald-100 font-mono text-xs text-slate-800 leading-normal">
-                            {simResult.message}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                            {simResult.constraintChecks?.map((check, idx) => {
+                              const isPassed = check.status === 'Passed';
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs ${
+                                    isPassed
+                                      ? 'bg-white border-emerald-200 text-slate-800'
+                                      : 'bg-rose-50/70 border-rose-200 text-rose-950 font-medium'
+                                  }`}
+                                >
+                                  <span className="font-medium truncate pr-2 text-slate-700">{check.constraint}</span>
+                                  <span
+                                    className={`inline-flex items-center gap-1 font-bold text-[11px] shrink-0 px-2 py-0.5 rounded ${
+                                      isPassed
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                        : 'bg-rose-100 text-rose-800 border border-rose-200'
+                                    }`}
+                                  >
+                                    {isPassed ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
+                                        Passed
+                                      </>
+                                    ) : (
+                                      <>
+                                        <X className="w-3 h-3 text-rose-600 stroke-[3]" />
+                                        Failed
+                                      </>
+                                    )}
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
+
+                        {/* Drafted Customer Message - only shown if NOT escalated */}
+                        {!simResult.escalate && (
+                          <div className="p-4 rounded-xl bg-emerald-50/40 border border-emerald-200 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <MessageSquare className="w-4 h-4 text-emerald-600" />
+                                <span className="font-bold text-xs text-emerald-900">
+                                  Suggested Customer Message Draft (WhatsApp / SMS)
+                                </span>
+                              </div>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
+                                1-Click Razorpay Link
+                              </span>
+                            </div>
+
+                            <div className="p-3 bg-white rounded-lg border border-emerald-100 font-mono text-xs text-slate-800 leading-normal">
+                              {simResult.message}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -1753,7 +1914,7 @@ export default function App() {
                       14-Day Revenue Retention &amp; Recovery Analysis
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Detailed telemetry of payments saved by RecoverAI over the last two weeks
+                      Detailed telemetry of payments saved by Nabbit over the last two weeks
                     </p>
                   </div>
                   <div className="text-xs text-slate-600 font-semibold bg-slate-100 px-3 py-1 rounded-lg">
@@ -1786,7 +1947,7 @@ export default function App() {
                       />
                       <Legend
                         wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }}
-                        formatter={(value) => (value === 'recovered' ? 'Recovered by RecoverAI (₹)' : 'Lost Due to Non-Recovery (₹)')}
+                        formatter={(value) => (value === 'recovered' ? 'Recovered by Nabbit (₹)' : 'Lost Due to Non-Recovery (₹)')}
                       />
                       <Bar dataKey="recovered" name="recovered" fill="#0d9488" radius={[4, 4, 0, 0]} />
                       <Bar dataKey="lost" name="lost" fill="#f43f5e" radius={[4, 4, 0, 0]} />
@@ -1839,7 +2000,7 @@ export default function App() {
                     Autonomous Recovery Rules &amp; Policies
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Set autonomous threshold boundaries for when RecoverAI retries payments, offers discount vouchers, or escalates.
+                    Set autonomous threshold boundaries for when Nabbit retries payments, offers discount vouchers, or escalates.
                   </p>
                 </div>
 
@@ -1977,7 +2138,7 @@ export default function App() {
                 <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-2">
                   <span className="text-xs font-bold uppercase text-slate-500">Connected Razorpay Webhooks</span>
                   <div className="p-2.5 rounded-lg bg-slate-900 text-slate-200 font-mono text-xs flex items-center justify-between">
-                    <span className="truncate">https://api.recoverai.io/v1/webhooks/rzp_live_918204bXa</span>
+                    <span className="truncate">https://api.nabbit.io/v1/webhooks/rzp_live_918204bXa</span>
                     <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold text-[10px]">
                       200 OK
                     </span>
@@ -2139,7 +2300,7 @@ export default function App() {
                 <div className="text-xs text-slate-500">
                   {selectedTx.status === 'Recovered' ? (
                     <span className="text-emerald-600 font-bold flex items-center gap-1">
-                      <CheckCircle2 className="w-4 h-4" /> Recovered via {selectedTx.recoveryChannelUsed || 'RecoverAI'}
+                      <CheckCircle2 className="w-4 h-4" /> Recovered via {selectedTx.recoveryChannelUsed || 'Nabbit'}
                     </span>
                   ) : (
                     <span>Ready for autonomous execution</span>
