@@ -1,0 +1,6 @@
+{
+  "name": "RecoverAI",
+  "description": "AI-powered payment failure recovery dashboard for Razorpay merchants",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
